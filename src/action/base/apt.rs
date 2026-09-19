@@ -7,10 +7,11 @@ use url::Url;
 use crate::action::{Action, ActionDescription, ActionState, StatefulAction};
 use crate::command::{command, execute_command};
 
-/** Install APT packages, if they are not installed already
+/** Install APT packages that were not already present
 
-Revert deliberately does nothing: these are shared system packages, and removing them
-because one install step failed would take other services down with it.
+Revert purges only the packages this action installed (`missing`), then
+`apt-get autoremove --purge` so unused dependencies leave too. Packages that
+were already on the machine are left installed.
 */
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(tag = "action_name", rename = "apt_install")]
@@ -111,18 +112,38 @@ impl Action for AptInstall {
     fn revert_description(&self) -> Vec<ActionDescription> {
         vec![ActionDescription::new(
             format!(
-                "Leave the APT packages ({}) installed",
+                "Purge APT packages ({}) and unused dependencies",
                 self.missing.join(", ")
             ),
-            vec![String::from(
-                "Other services on this host may depend on them",
-            )],
+            vec![
+                String::from("`apt-get purge` the packages this step installed"),
+                String::from("`apt-get autoremove --purge` so unused dependencies leave too"),
+            ],
         )]
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
     async fn revert(&mut self) -> anyhow::Result<()> {
-        tracing::debug!("Leaving APT packages installed");
+        if !self.missing.is_empty() {
+            execute_command(
+                command("apt-get")
+                    .env("DEBIAN_FRONTEND", "noninteractive")
+                    .arg("purge")
+                    .arg("-y")
+                    .args(&self.missing),
+            )
+            .await?;
+        }
+
+        execute_command(
+            command("apt-get")
+                .env("DEBIAN_FRONTEND", "noninteractive")
+                .arg("autoremove")
+                .arg("--purge")
+                .arg("-y"),
+        )
+        .await?;
+
         Ok(())
     }
 }
