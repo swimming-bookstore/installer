@@ -220,3 +220,62 @@ impl Action for StartSystemdUnit {
         crate::action::fold_errors(errors)
     }
 }
+
+/** Restart a systemd unit so a config change takes effect
+
+Always runs: the unit may already be active with stale configuration. Revert
+stops it so a following package purge can drop its state.
+*/
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[serde(tag = "action_name", rename = "restart_systemd_unit")]
+pub struct RestartSystemdUnit {
+    unit: String,
+}
+
+impl RestartSystemdUnit {
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub async fn plan(unit: impl AsRef<str>) -> anyhow::Result<StatefulAction<Self>> {
+        Ok(StatefulAction::uncompleted(Self {
+            unit: unit.as_ref().to_string(),
+        }))
+    }
+}
+
+#[async_trait::async_trait]
+#[typetag::serde(name = "restart_systemd_unit")]
+impl Action for RestartSystemdUnit {
+    fn tracing_synopsis(&self) -> String {
+        format!("Restart the systemd unit `{}`", self.unit)
+    }
+
+    fn tracing_span(&self) -> Span {
+        span!(
+            tracing::Level::DEBUG,
+            "restart_systemd_unit",
+            unit = self.unit,
+        )
+    }
+
+    fn execute_description(&self) -> Vec<ActionDescription> {
+        vec![ActionDescription::new(self.tracing_synopsis(), vec![])]
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn execute(&mut self) -> anyhow::Result<()> {
+        execute_command(command("systemctl").arg("restart").arg(&self.unit)).await?;
+        Ok(())
+    }
+
+    fn revert_description(&self) -> Vec<ActionDescription> {
+        vec![ActionDescription::new(
+            format!("Stop the systemd unit `{}`", self.unit),
+            vec![],
+        )]
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn revert(&mut self) -> anyhow::Result<()> {
+        let _ = execute_command(command("systemctl").arg("stop").arg(&self.unit)).await;
+        Ok(())
+    }
+}
