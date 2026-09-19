@@ -117,6 +117,79 @@ pub async fn write_owned_file(
         .with_context(|| format!("Writing `{}`", path.display()))
 }
 
+/// Expand a glob whose `*` / `?` sit in a path component (`/etc/postgresql/*/main/pg_hba.conf`)
+///
+/// Missing parents yield an empty list rather than an error, so a plan can be made before
+/// the package that creates those paths is installed.
+pub async fn glob_paths(pattern: &str) -> anyhow::Result<Vec<PathBuf>> {
+    use std::path::Component;
+
+    let mut currents = vec![PathBuf::new()];
+    for component in Path::new(pattern).components() {
+        match component {
+            Component::RootDir => currents = vec![PathBuf::from("/")],
+            Component::CurDir => {
+                if currents.len() == 1 && currents[0].as_os_str().is_empty() {
+                    currents[0] = PathBuf::from(".");
+                }
+            },
+            Component::Normal(name) => {
+                let name = name.to_string_lossy();
+                if name.contains('*') || name.contains('?') {
+                    let mut next = Vec::new();
+                    for current in &currents {
+                        let dir = if current.as_os_str().is_empty() {
+                            Path::new(".")
+                        } else {
+                            current.as_path()
+                        };
+                        let mut entries = match tokio::fs::read_dir(dir).await {
+                            Ok(entries) => entries,
+                            Err(_) => continue,
+                        };
+                        while let Some(entry) = entries.next_entry().await? {
+                            if glob_component(&name, &entry.file_name().to_string_lossy()) {
+                                next.push(entry.path());
+                            }
+                        }
+                    }
+                    currents = next;
+                } else {
+                    for current in &mut currents {
+                        current.push(name.as_ref());
+                    }
+                }
+            },
+            Component::ParentDir => {
+                for current in &mut currents {
+                    current.push("..");
+                }
+            },
+            Component::Prefix(_) => {},
+        }
+    }
+
+    let mut paths: Vec<PathBuf> = currents.into_iter().filter(|path| path.is_file()).collect();
+    paths.sort();
+    Ok(paths)
+}
+
+fn glob_component(pattern: &str, name: &str) -> bool {
+    glob_chars(pattern.as_bytes(), name.as_bytes())
+}
+
+fn glob_chars(pattern: &[u8], name: &[u8]) -> bool {
+    match pattern.first() {
+        None => name.is_empty(),
+        Some(b'*') => {
+            glob_chars(&pattern[1..], name)
+                || (!name.is_empty() && glob_chars(pattern, &name[1..]))
+        },
+        Some(b'?') => !name.is_empty() && glob_chars(&pattern[1..], &name[1..]),
+        Some(byte) => name.first() == Some(byte) && glob_chars(&pattern[1..], &name[1..]),
+    }
+}
+
 pub fn uid_of(user: &str) -> anyhow::Result<Uid> {
     Ok(User::from_name(user)
         .with_context(|| format!("Getting user `{user}`"))?
@@ -440,5 +513,29 @@ mod test {
         let err = require_user("definitely-not-a-real-user-xyz")
             .expect_err("unknown user");
         assert!(err.to_string().contains("definitely-not-a-real-user-xyz"));
+    }
+
+    #[test]
+    fn glob_component_star_and_question() {
+        assert!(super::glob_component("*", "main"));
+        assert!(super::glob_component("pg_hba.conf", "pg_hba.conf"));
+        assert!(super::glob_component("pg_*.conf", "pg_hba.conf"));
+        assert!(!super::glob_component("pg_*.conf", "postgresql.conf"));
+        assert!(super::glob_component("?.conf", "a.conf"));
+        assert!(!super::glob_component("?.conf", "ab.conf"));
+    }
+
+    #[tokio::test]
+    async fn glob_paths_expands_a_star_component() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let nested = root.path().join("16").join("main");
+        tokio::fs::create_dir_all(&nested).await?;
+        tokio::fs::write(nested.join("pg_hba.conf"), "x").await?;
+        tokio::fs::create_dir_all(root.path().join("15")).await?;
+
+        let pattern = format!("{}/*/main/pg_hba.conf", root.path().display());
+        let paths = glob_paths(&pattern).await?;
+        assert_eq!(paths, vec![nested.join("pg_hba.conf")]);
+        Ok(())
     }
 }

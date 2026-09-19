@@ -4,7 +4,7 @@ A CLI installer framework: reversible actions, planners, receipts, and `plan` / 
 
 Three concepts carry an installer built on this crate:
 
-- **`Action`** — one executable, revertable step (`CreateDirectory`, `InstallBinary`, `StartSystemdUnit`). An action which can tell *while planning* that its work is done says so and is skipped.
+- **`Action`** — one executable, revertable step (`CreateDirectory`, `InstallBinary`, `StartSystemdUnit`, `AppendLine`, `RunCommand`, `RestartSystemdUnit`). An action which can tell *while planning* that its work is done says so and is skipped.
 - **`InstallPlan`** — the ordered sequence of actions, plus the planner and version that produced it. Shown for confirmation, written as the receipt.
 - **`Planner`** — produces the plan, and holds its settings.
 
