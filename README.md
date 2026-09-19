@@ -21,3 +21,5 @@ When the installer re-runs itself under `sudo`, variables matching `App::env_pre
 ## What revert will not do
 
 Reverting is for undoing a stage that failed or is being redone. Actions which own irreplaceable state should say so in their revert description and leave it alone. Read the uninstall plan (`--explain`) before confirming.
+
+`AptInstall` purges only packages it installed (those missing at plan time) and then `autoremove --purge`. Packages that were already present stay.
